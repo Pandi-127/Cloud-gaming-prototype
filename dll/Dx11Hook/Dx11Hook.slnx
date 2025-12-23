@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Dx11Hook/Dx11Hook.vcxproj" Id="f1bdeaad-9e8f-4402-9f9b-edc090c336a9" />
+</Solution>
