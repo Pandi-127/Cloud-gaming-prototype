@@ -3,17 +3,18 @@
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include <atomic>
+#include <vector>
 #include <cstdint>
-#include <fstream>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
 #include "MinHook.h"
 
-// ------------------------------------------------------------
-// Globals
-// ------------------------------------------------------------
+// ============================================================
+// Globals: DX11 hook
+// ============================================================
 
 typedef HRESULT(__stdcall* PresentFn)(
     IDXGISwapChain*,
@@ -28,14 +29,46 @@ ID3D11Device* g_Device = nullptr;
 ID3D11DeviceContext* g_Context = nullptr;
 ID3D11Texture2D* g_StagingTexture = nullptr;
 
-// ------------------------------------------------------------
+// staging tracking
+UINT g_StagingWidth = 0;
+UINT g_StagingHeight = 0;
+DXGI_FORMAT g_StagingFormat = DXGI_FORMAT_UNKNOWN;
+
+// ============================================================
+// Ring buffer definitions
+// ============================================================
+
+constexpr int RING_SIZE = 3;
+
+struct FrameSlot
+{
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t rowPitch = 0;
+    uint64_t frameId = 0;
+    std::vector<uint8_t> pixels;
+};
+
+struct RingBuffer
+{
+    FrameSlot slots[RING_SIZE];
+    std::atomic<uint32_t> writeIndex{ 0 };
+    std::atomic<uint32_t> readIndex{ 0 };
+};
+
+RingBuffer g_RingBuffer;
+std::atomic<uint64_t> g_FrameCounter{ 0 };
+std::atomic<bool> g_Running{ true };
+
+// ============================================================
 // Forward declarations
-// ------------------------------------------------------------
+// ============================================================
 
 HWND CreateDummyWindow();
 bool CreateDummyD3D11Device(ID3D11Device**, ID3D11DeviceContext**);
 IDXGISwapChain* CreateDummySwapChain(ID3D11Device*, HWND);
 void ExtractPresent(IDXGISwapChain*);
+DWORD WINAPI ConsumerThread(LPVOID);
 
 HRESULT __stdcall HookedPresent(
     IDXGISwapChain*,
@@ -43,101 +76,9 @@ HRESULT __stdcall HookedPresent(
     UINT
 );
 
-// ------------------------------------------------------------
-// Save BMP helper
-// ------------------------------------------------------------
-
-void SaveBMP(
-    const char* filename,
-    uint8_t* rgbaData,
-    int width,
-    int height,
-    int rowPitch
-)
-{
-    BITMAPFILEHEADER fileHeader{};
-    BITMAPINFOHEADER infoHeader{};
-
-    int imageSize = width * height * 4;
-
-    fileHeader.bfType = 0x4D42; // BM
-    fileHeader.bfOffBits =
-        sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
-    fileHeader.bfSize = fileHeader.bfOffBits + imageSize;
-
-    infoHeader.biSize = sizeof(BITMAPINFOHEADER);
-    infoHeader.biWidth = width;
-    infoHeader.biHeight = height;
-    infoHeader.biPlanes = 1;
-    infoHeader.biBitCount = 32;
-    infoHeader.biCompression = BI_RGB;
-
-    std::ofstream file(filename, std::ios::binary);
-    file.write((char*)&fileHeader, sizeof(fileHeader));
-    file.write((char*)&infoHeader, sizeof(infoHeader));
-
-    // BMP is bottom-up
-    for (int y = height - 1; y >= 0; --y)
-    {
-        uint8_t* row = rgbaData + y * rowPitch;
-
-        for (int x = 0; x < width; ++x)
-        {
-            uint8_t r = row[x * 4 + 0];
-            uint8_t g = row[x * 4 + 1];
-            uint8_t b = row[x * 4 + 2];
-            uint8_t a = row[x * 4 + 3];
-
-            file.put(b);
-            file.put(g);
-            file.put(r);
-            file.put(a);
-        }
-    }
-
-    file.close();
-}
-
-// ------------------------------------------------------------
-// Worker thread
-// ------------------------------------------------------------
-
-DWORD WINAPI WorkerThread(LPVOID)
-{
-    Sleep(2000);
-
-    HWND hwnd = CreateDummyWindow();
-    if (!hwnd) return 0;
-
-    ID3D11Device* device = nullptr;
-    ID3D11DeviceContext* context = nullptr;
-
-    if (!CreateDummyD3D11Device(&device, &context))
-        return 0;
-
-    IDXGISwapChain* swapChain = CreateDummySwapChain(device, hwnd);
-    if (!swapChain)
-        return 0;
-
-    ExtractPresent(swapChain);
-
-    MH_Initialize();
-    MH_CreateHook(g_Present, &HookedPresent,
-        reinterpret_cast<void**>(&oPresent));
-    MH_EnableHook(g_Present);
-
-    OutputDebugStringA("[Dx11Hook] Present hook installed\n");
-
-    swapChain->Release();
-    context->Release();
-    device->Release();
-
-    return 0;
-}
-
-// ------------------------------------------------------------
+// ============================================================
 // DLL entry
-// ------------------------------------------------------------
+// ============================================================
 
 BOOL APIENTRY DllMain(
     HMODULE hModule,
@@ -148,14 +89,55 @@ BOOL APIENTRY DllMain(
     if (reason == DLL_PROCESS_ATTACH)
     {
         DisableThreadLibraryCalls(hModule);
-        CreateThread(nullptr, 0, WorkerThread, nullptr, 0, nullptr);
+
+        CreateThread(nullptr, 0, ConsumerThread, nullptr, 0, nullptr);
+
+        CreateThread(nullptr, 0, [](LPVOID) -> DWORD
+            {
+                Sleep(2000);
+
+                HWND hwnd = CreateDummyWindow();
+                ID3D11Device* device = nullptr;
+                ID3D11DeviceContext* context = nullptr;
+
+                if (!CreateDummyD3D11Device(&device, &context))
+                    return 0;
+
+                IDXGISwapChain* sc = CreateDummySwapChain(device, hwnd);
+                if (!sc)
+                    return 0;
+
+                ExtractPresent(sc);
+
+                MH_Initialize();
+                MH_CreateHook(
+                    g_Present,
+                    &HookedPresent,
+                    reinterpret_cast<void**>(&oPresent)
+                );
+                MH_EnableHook(g_Present);
+
+                OutputDebugStringA("[Ring] Present hook installed\n");
+
+                sc->Release();
+                context->Release();
+                device->Release();
+
+                return 0;
+            }, nullptr, 0, nullptr);
     }
+
+    if (reason == DLL_PROCESS_DETACH)
+    {
+        g_Running = false;
+    }
+
     return TRUE;
 }
 
-// ------------------------------------------------------------
-// Hook — STAGE 2 + STAGE 3
-// ------------------------------------------------------------
+// ============================================================
+// Producer: Hooked Present
+// ============================================================
 
 HRESULT __stdcall HookedPresent(
     IDXGISwapChain* swapChain,
@@ -164,9 +146,7 @@ HRESULT __stdcall HookedPresent(
 )
 {
     static bool initialized = false;
-    static bool saved = false;
 
-    // Stage 1: get device/context
     if (!initialized)
     {
         if (SUCCEEDED(swapChain->GetDevice(
@@ -174,81 +154,138 @@ HRESULT __stdcall HookedPresent(
             (void**)&g_Device)))
         {
             g_Device->GetImmediateContext(&g_Context);
-            OutputDebugStringA(
-                "[Dx11Hook] Device + Context acquired\n"
-            );
+            OutputDebugStringA("[Ring] Device + Context acquired\n");
             initialized = true;
         }
     }
 
     ID3D11Texture2D* backBuffer = nullptr;
-
-    if (SUCCEEDED(swapChain->GetBuffer(
+    if (FAILED(swapChain->GetBuffer(
         0,
         __uuidof(ID3D11Texture2D),
         (void**)&backBuffer)))
     {
-        if (!g_StagingTexture)
-        {
-            D3D11_TEXTURE2D_DESC desc{};
-            backBuffer->GetDesc(&desc);
-
-            desc.Usage = D3D11_USAGE_STAGING;
-            desc.BindFlags = 0;
-            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            desc.MiscFlags = 0;
-
-            g_Device->CreateTexture2D(
-                &desc, nullptr, &g_StagingTexture
-            );
-        }
-
-        g_Context->CopyResource(g_StagingTexture, backBuffer);
-
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (SUCCEEDED(g_Context->Map(
-            g_StagingTexture,
-            0,
-            D3D11_MAP_READ,
-            0,
-            &mapped)))
-        {
-            if (!saved)
-            {
-                D3D11_TEXTURE2D_DESC desc{};
-                backBuffer->GetDesc(&desc);
-
-                SaveBMP(
-                    "frame.bmp",
-                    (uint8_t*)mapped.pData,
-                    desc.Width,
-                    desc.Height,
-                    mapped.RowPitch
-                );
-
-                OutputDebugStringA(
-                    "[Dx11Hook] Frame saved to disk\n"
-                );
-                saved = true;
-            }
-
-            g_Context->Unmap(g_StagingTexture, 0);
-        }
-
-        backBuffer->Release();
+        return oPresent(swapChain, SyncInterval, Flags);
     }
 
+    D3D11_TEXTURE2D_DESC bbDesc{};
+    backBuffer->GetDesc(&bbDesc);
+
+    // ---- FIX: recreate staging texture if size/format changed ----
+    bool recreate =
+        !g_StagingTexture ||
+        g_StagingWidth != bbDesc.Width ||
+        g_StagingHeight != bbDesc.Height ||
+        g_StagingFormat != bbDesc.Format;
+
+    if (recreate)
+    {
+        if (g_StagingTexture)
+        {
+            g_StagingTexture->Release();
+            g_StagingTexture = nullptr;
+        }
+
+        D3D11_TEXTURE2D_DESC stagingDesc = bbDesc;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.BindFlags = 0;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        stagingDesc.MiscFlags = 0;
+
+        if (SUCCEEDED(g_Device->CreateTexture2D(
+            &stagingDesc,
+            nullptr,
+            &g_StagingTexture)))
+        {
+            g_StagingWidth = bbDesc.Width;
+            g_StagingHeight = bbDesc.Height;
+            g_StagingFormat = bbDesc.Format;
+
+            OutputDebugStringA(
+                "[Ring] Staging texture recreated\n"
+            );
+        }
+    }
+
+    g_Context->CopyResource(g_StagingTexture, backBuffer);
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (SUCCEEDED(g_Context->Map(
+        g_StagingTexture,
+        0,
+        D3D11_MAP_READ,
+        0,
+        &mapped)))
+    {
+        uint32_t index =
+            g_RingBuffer.writeIndex.load() % RING_SIZE;
+
+        FrameSlot& slot = g_RingBuffer.slots[index];
+
+        size_t dataSize = bbDesc.Height * mapped.RowPitch;
+        if (slot.pixels.size() != dataSize)
+            slot.pixels.resize(dataSize);
+
+        memcpy(slot.pixels.data(), mapped.pData, dataSize);
+
+        slot.width = bbDesc.Width;
+        slot.height = bbDesc.Height;
+        slot.rowPitch = mapped.RowPitch;
+        slot.frameId = g_FrameCounter++;
+
+        g_RingBuffer.writeIndex++;
+
+        g_Context->Unmap(g_StagingTexture, 0);
+    }
+
+    backBuffer->Release();
     return oPresent(swapChain, SyncInterval, Flags);
 }
 
-// ------------------------------------------------------------
-// Dummy window
-// ------------------------------------------------------------
+// ============================================================
+// Consumer thread
+// ============================================================
 
-LRESULT CALLBACK DummyWndProc(
-    HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+DWORD WINAPI ConsumerThread(LPVOID)
 {
-    return DefWindowProc(hwnd, msg, wp, lp);
+    while (g_Running)
+    {
+        uint32_t read = g_RingBuffer.readIndex.load();
+        uint32_t write = g_RingBuffer.writeIndex.load();
+
+        if (read < write)
+        {
+            FrameSlot& slot =
+                g_RingBuffer.slots[read % RING_SIZE];
+
+            char msg[128];
+            sprintf_s(
+                msg,
+                "[Consumer] Frame %llu (%ux%u)\n",
+                slot.frameId,
+                slot.width,
+                slot.height
+            );
+
+            OutputDebugStringA(msg);
+            g_RingBuffer.readIndex++;
+        }
+        else
+        {
+            Sleep(1);
+        }
+    }
+
+    return 0;
+}
+
+// ============================================================
+// Dummy DX11 setup
+// ============================================================
+
+LRESULT CALLBACK DummyWndProc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    return DefWindowProc(h, m, w, l);
 }
 
 HWND CreateDummyWindow()
@@ -274,18 +311,14 @@ HWND CreateDummyWindow()
     );
 }
 
-// ------------------------------------------------------------
-// Dummy device
-// ------------------------------------------------------------
-
 bool CreateDummyD3D11Device(
     ID3D11Device** device,
     ID3D11DeviceContext** context)
 {
+    D3D_FEATURE_LEVEL level;
     D3D_FEATURE_LEVEL levels[] = {
         D3D_FEATURE_LEVEL_11_0
     };
-    D3D_FEATURE_LEVEL level;
 
     return SUCCEEDED(D3D11CreateDevice(
         nullptr,
@@ -301,50 +334,44 @@ bool CreateDummyD3D11Device(
     ));
 }
 
-// ------------------------------------------------------------
-// Dummy swap chain
-// ------------------------------------------------------------
-
 IDXGISwapChain* CreateDummySwapChain(
     ID3D11Device* device,
     HWND hwnd)
 {
-    IDXGIDevice* dxgiDevice;
+    IDXGIDevice* dxgi;
     IDXGIAdapter* adapter;
     IDXGIFactory* factory;
 
     device->QueryInterface(
         __uuidof(IDXGIDevice),
-        (void**)&dxgiDevice);
-    dxgiDevice->GetAdapter(&adapter);
+        (void**)&dxgi);
+    dxgi->GetAdapter(&adapter);
     adapter->GetParent(
         __uuidof(IDXGIFactory),
         (void**)&factory);
 
     DXGI_SWAP_CHAIN_DESC desc{};
     desc.BufferCount = 2;
-    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferDesc.Format =
+        DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BufferUsage =
+        DXGI_USAGE_RENDER_TARGET_OUTPUT;
     desc.OutputWindow = hwnd;
     desc.SampleDesc.Count = 1;
     desc.Windowed = TRUE;
 
-    IDXGISwapChain* swapChain = nullptr;
-    factory->CreateSwapChain(device, &desc, &swapChain);
+    IDXGISwapChain* sc = nullptr;
+    factory->CreateSwapChain(device, &desc, &sc);
 
     factory->Release();
     adapter->Release();
-    dxgiDevice->Release();
+    dxgi->Release();
 
-    return swapChain;
+    return sc;
 }
 
-// ------------------------------------------------------------
-// Present extraction
-// ------------------------------------------------------------
-
-void ExtractPresent(IDXGISwapChain* swapChain)
+void ExtractPresent(IDXGISwapChain* sc)
 {
-    void** vtable = *reinterpret_cast<void***>(swapChain);
+    void** vtable = *reinterpret_cast<void***>(sc);
     g_Present = vtable[8];
 }
