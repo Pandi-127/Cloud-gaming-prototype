@@ -29,7 +29,7 @@ DWORD FindProcessId(const wchar_t* processName)
 
 int main()
 {
-    const wchar_t* targetProcess = L"EmptyProject11.exe";
+    const wchar_t* targetProcess = L"INSIDE.exe";
     const wchar_t* dllPath = L"D:\\Projects\\Cloud-Gaming-Prototype\\dll\\Dx11Hook\\x64\\Debug\\Dx11Hook.dll";
 
     DWORD pid = FindProcessId(targetProcess);
