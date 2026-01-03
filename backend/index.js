@@ -3,10 +3,13 @@ import net from "node:net";
 
 // ================= PATHS =================
 
-const GAME_PATH = "D:\\games\\games installer\\INSIDE-AnkerGames\\INSIDE\\INSIDE.exe";
+const GAME_PATH =
+	"D:\\games\\games installer\\INSIDE-AnkerGames\\INSIDE\\INSIDE.exe";
 
 const INJECTOR_PATH =
 	"D:\\Projects\\Cloud-Gaming-Prototype\\Injector\\injector\\x64\\Debug\\injector.exe";
+const FFPLAYPATH =
+	"D:\\Projects\\tools-instalers\\installed\\ffmpeg-8.0.1-essentials_build\\bin\\ffplay.exe";
 
 // ================= PROTOCOL =================
 
@@ -25,8 +28,7 @@ function startGame() {
 		const game = spawn(GAME_PATH, [], { stdio: "inherit" });
 		game.once("error", reject);
 
-		// Outlast needs time (splash → real window)
-		setTimeout(resolve, 9000);
+		setTimeout(resolve, 2000);
 	});
 }
 
@@ -52,6 +54,8 @@ function connectPipe() {
 
 let buffer = Buffer.alloc(0);
 let frameCount = 0;
+const MAX_FRAMES = 3;
+const frameRing = [];
 
 startGame()
 	.then(injectDLL)
@@ -102,14 +106,27 @@ startGame()
 				const height = buffer.readUInt32LE(28);
 
 				frameCount++;
-				console.log(
-					`Frame ${frameCount} received (${width}x${height}, ${payloadSize} bytes)`,
-				);
+				//console.log(
+				//	`Frame ${frameCount} received (${width}x${height}, ${payloadSize} bytes)`,
+				//);
 
+				const frameBytes = buffer.slice(
+					HEADER_SIZE,
+					HEADER_SIZE + payloadSize,
+				);
+				pushFrame(frameBytes, frameCount);
 				// consume frame
 				buffer = buffer.slice(HEADER_SIZE + payloadSize);
 			}
 		});
+
+		/* 	const ffplay = spawn(FFPLAYPATH, ["-i", "bgra"], {
+			stdio: ["pipe", "inherit", "inherit"],
+		});
+
+		ffplay.once("error", (err) => {
+			console.log("ffplay error:", err);
+		});*/
 
 		pipe.on("close", () => {
 			console.log("Pipe closed");
@@ -118,3 +135,13 @@ startGame()
 	.catch((err) => {
 		console.error("Fatal error:", err);
 	});
+
+function pushFrame(frame, frameCount) {
+	frameRing.push(frame);
+	console.log(`Frame pushed to ring buffer${frameCount}`);
+
+	// drop oldest frame if full
+	if (frameRing.length > MAX_FRAMES) {
+		frameRing.shift();
+	}
+}
