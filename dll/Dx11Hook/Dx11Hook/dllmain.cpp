@@ -193,6 +193,10 @@ HRESULT __stdcall HookedPresent(IDXGISwapChain* swap, UINT sync, UINT flags) {
     D3D11_TEXTURE2D_DESC desc{};
     backBuffer->GetDesc(&desc);
 
+    if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) {
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    }
+
     if (!g_Staging ||
         g_Ring.slots[0].width != desc.Width ||
         g_Ring.slots[0].height != desc.Height) {
