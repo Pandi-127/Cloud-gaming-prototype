@@ -1,5 +1,7 @@
 import { spawn } from "child_process";
 import net from "node:net";
+import { exec } from "child_process";
+import dgram from "node:dgram";
 
 // ================= PATHS =================
 
@@ -9,40 +11,52 @@ const GAME_PATH =
 const INJECTOR_PATH =
 	"D:\\Projects\\Cloud-Gaming-Prototype\\Injector\\injector\\x64\\Debug\\injector.exe";
 
-const FFPLAY_PATH =
-	"D:\\Projects\\tools-instalers\\installed\\ffmpeg-8.0.1-essentials_build\\bin\\ffplay.exe";
+const FFMPEG_PATH =
+	"D:\\Projects\\tools-instalers\\installed\\ffmpeg-8.0.1-essentials_build\\bin\\ffmpeg.exe";
 
-// ================= PROTOCOL =================
+// ================= CONSTANTS =================
 
 const HEADER_SIZE = 40;
-const MAGIC = 0x4d415246; // 'FRAM'
+const MAGIC = 0x4d415246;
 
-// safety caps
-const MAX_PAYLOAD = 1920 * 1080 * 4 * 2;
-const MAX_BUFFER = MAX_PAYLOAD * 2;
-
-// playback
 const TARGET_FPS = 60;
 const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
-const PRIME_FRAMES = 3;
+
+const MAX_PAYLOAD = 1920 * 1080 * 4;
+const MAX_BUFFER = MAX_PAYLOAD * 2;
+
+const PRIME_FRAMES = 4;
+
+const MIN_QUEUE_SIZE = 2;
+const MAX_QUEUE_SIZE = 8;
+const TARGET_QUEUE_SIZE = 4;
+
+let dynamicQueueMax = TARGET_QUEUE_SIZE;
+
+let videoWidth = null;
+let videoHeight = null;
+
+let frameQueue = [];
+let frameCount = 0;
+let droppedFrames = 0;
+
+let ffmpeg = null;
+let ffmpegReady = true;
+let encodingStarted = false;
 
 // ================= GAME =================
 
 function startGame() {
-	return new Promise((resolve, reject) => {
-		console.log("Starting game...");
-		const game = spawn(GAME_PATH, [], { stdio: "inherit" });
-		game.once("error", reject);
-		setTimeout(resolve, 2000);
-	});
+	console.log("Starting game...");
+	spawn(GAME_PATH, [], { stdio: "inherit" });
 }
 
 function injectDLL() {
 	return new Promise((resolve, reject) => {
 		console.log("Injecting DLL...");
 		const injector = spawn(INJECTOR_PATH, [], { stdio: "inherit" });
-		injector.once("error", reject);
 		injector.once("exit", resolve);
+		injector.once("error", reject);
 	});
 }
 
@@ -55,132 +69,289 @@ function connectPipe() {
 	});
 }
 
-// ================= RING BUFFER =================
-
-const MAX_FRAMES = 3;
-const frameRing = [];
-
-let lastFrame = null;
-let videoWidth = null;
-let videoHeight = null;
-
 function pushFrame(frame) {
-	frameRing.push(frame);
-	if (frameRing.length > MAX_FRAMES) frameRing.shift();
-}
+	const frameCopy = Buffer.from(frame);
 
-function fetchLatestFrame() {
-	if (frameRing.length > 0) {
-		lastFrame = frameRing[frameRing.length - 1];
+	if (frameQueue.length >= dynamicQueueMax) {
+		if (frameQueue.length >= dynamicQueueMax + 3) {
+			while (frameQueue.length >= dynamicQueueMax) {
+				frameQueue.shift();
+				droppedFrames++;
+			}
+			console.warn(
+				`Emergency drop: queue overflowed to ${frameQueue.length + 3}`,
+			);
+		}
+		droppedFrames++;
+		return;
 	}
-	return lastFrame;
+
+	frameQueue.push(frameCopy);
 }
 
-// ================= F F P L A Y =================
+// ================= FFMPEG =================
 
-function spawnFFPlay(width, height) {
-	console.log(`Spawning ffplay ${width}x${height}`);
+function spawnFFMPEG(width, height) {
+	console.log(
+		`Starting FFmpeg NVENC (adaptive, low-latency) ${width}x${height}`,
+	);
 
-	return spawn(
-		FFPLAY_PATH,
+	const ffmpegProcess = spawn(
+		FFMPEG_PATH,
 		[
+			"-y",
+			"-loglevel",
+			"warning",
+			"-stats",
+
 			"-fflags",
 			"nobuffer",
-			"-flags",
-			"low_delay",
-			"-sync",
-			"video",
+			"-max_delay",
+			"0",
 
+			// ---------- INPUT ----------
 			"-f",
 			"rawvideo",
-			"-pixel_format",
+			"-pix_fmt",
 			"rgba",
 			"-video_size",
 			`${width}x${height}`,
 			"-framerate",
-			`${TARGET_FPS}`,
+			"60",
+			"-thread_queue_size",
+			"512",
 			"-i",
 			"-",
+
+			// ---------- PROCESSING ----------
+			"-vf",
+			"format=nv12",
+
+			// ---------- NVENC OPTIMIZED ----------
+			"-c:v",
+			"h264_nvenc",
+			"-preset",
+			"p2",
+			"-tune",
+			"ull",
+			"-zerolatency",
+			"1",
+			"-rc",
+			"cbr",
+			"-b:v",
+			"10M",
+			"-maxrate",
+			"10M",
+			"-bufsize",
+			"1.5M",
+			"-g",
+			"60",
+			"-bf",
+			"0",
+			"-refs",
+			"1",
+			"-delay",
+			"0",
+			"-forced-idr",
+			"1",
+			"-profile:v",
+			"high",
+			"-level",
+			"4.2",
+			"-spatial-aq",
+			"1",
+			"-temporal-aq",
+			"0",
+			"-rc-lookahead",
+			"0",
+			"-no-scenecut",
+			"1",
+
+			// ---------- OUTPUT ----------
+			"-f",
+			"h264",
+			"udp://127.0.0.1:5000",
 		],
 		{ stdio: ["pipe", "inherit", "inherit"] },
 	);
+
+	ffmpegProcess.stdin.on("drain", () => {
+		ffmpegReady = true;
+	});
+
+	ffmpegProcess.on("error", (err) => {
+		console.error("❌ FFmpeg error:", err);
+	});
+
+	ffmpegProcess.on("exit", (code) => {
+		console.log(`FFmpeg exited with code ${code}`);
+	});
+
+	setTimeout(() => {
+		exec(
+			'wmic process where name="ffmpeg.exe" CALL setpriority "high priority"',
+			(err) => {
+				if (!err) console.log("✓ FFmpeg priority set to HIGH");
+			},
+		);
+	}, 1000);
+
+	setTimeout(() => {
+		exec(
+			"ffplay.exe -fflags nobuffer -flags low_delay -framedrop -an udp://127.0.0.1:1234",
+			(err) => {
+				if (!err) console.log("✓ FFplay spawned");
+			},
+		);
+	}, 1000);
+
+	return ffmpegProcess;
+}
+
+// ================= FRAME WRITER =================
+
+function writeFrameToFFmpeg() {
+	if (!ffmpeg || !ffmpeg.stdin.writable) return;
+
+	if (!ffmpegReady) {
+		return;
+	}
+
+	if (frameQueue.length === 0) {
+		return;
+	}
+
+	const frame = frameQueue.shift();
+
+	ffmpegReady = ffmpeg.stdin.write(frame);
 }
 
 // ================= PIPE PARSER =================
 
-let buffer = Buffer.alloc(0);
-let playbackStarted = false;
-let ffplay = null;
+function handlePipe(pipe) {
+	const buffer = Buffer.allocUnsafe(MAX_BUFFER);
+	let writeOffset = 0;
 
-startGame()
-	.then(injectDLL)
-	.then(connectPipe)
-	.then((pipe) => {
-		console.log("Pipe connected, waiting for frames...");
-
-		pipe.on("data", (chunk) => {
-			buffer = Buffer.concat([buffer, chunk]);
-
-			if (buffer.length > MAX_BUFFER) {
-				console.error("Buffer overflow — clearing");
-				buffer = Buffer.alloc(0);
-				return;
-			}
-
-			while (true) {
-				if (buffer.length < HEADER_SIZE) break;
-
-				if (buffer.readUInt32LE(0) !== MAGIC) {
-					buffer = buffer.slice(1);
-					continue;
-				}
-
-				const payloadSize = buffer.readUInt32LE(36);
-				if (payloadSize <= 0 || payloadSize > MAX_PAYLOAD) {
-					buffer = buffer.slice(1);
-					continue;
-				}
-
-				if (buffer.length < HEADER_SIZE + payloadSize) break;
-
-				videoWidth = buffer.readUInt32LE(24);
-				videoHeight = buffer.readUInt32LE(28);
-
-				const frame = buffer.slice(
-					HEADER_SIZE,
-					HEADER_SIZE + payloadSize,
-				);
-
-				pushFrame(frame);
-				buffer = buffer.slice(HEADER_SIZE + payloadSize);
-
-				// ---- START PLAYBACK ONLY WHEN PRIMED ----
-				if (!playbackStarted && frameRing.length >= PRIME_FRAMES) {
-					startPlayback();
-					playbackStarted = true;
-				}
-			}
-		});
-
-		pipe.on("close", () => {
-			console.log("Pipe closed");
-			if (ffplay) ffplay.stdin.end();
-		});
-	})
-	.catch(console.error);
-
-// ================= PLAYBACK LOOP =================
-
-function startPlayback() {
-	ffplay = spawnFFPlay(videoWidth, videoHeight);
-	console.log("Starting stable 60 FPS playback loop");
-
-	setInterval(() => {
-		if (!ffplay || !ffplay.stdin.writable) return;
-
-		const frame = fetchLatestFrame();
-		if (frame) {
-			ffplay.stdin.write(frame);
+	pipe.on("data", (chunk) => {
+		if (writeOffset + chunk.length > buffer.length) {
+			console.warn("Buffer overflow - resetting (data loss!)");
+			writeOffset = 0;
+			return;
 		}
-	}, FRAME_INTERVAL_MS);
+
+		chunk.copy(buffer, writeOffset);
+		writeOffset += chunk.length;
+
+		let readOffset = 0;
+
+		while (true) {
+			if (writeOffset - readOffset < HEADER_SIZE) break;
+
+			if (buffer.readUInt32LE(readOffset) !== MAGIC) {
+				readOffset += 1;
+				continue;
+			}
+
+			const payloadSize = buffer.readUInt32LE(readOffset + 36);
+			if (payloadSize <= 0 || payloadSize > MAX_PAYLOAD) {
+				readOffset += 1;
+				continue;
+			}
+
+			const frameSize = HEADER_SIZE + payloadSize;
+			if (writeOffset - readOffset < frameSize) break;
+
+			videoWidth = buffer.readUInt32LE(readOffset + 24);
+			videoHeight = buffer.readUInt32LE(readOffset + 28);
+
+			const frame = buffer.subarray(
+				readOffset + HEADER_SIZE,
+				readOffset + frameSize,
+			);
+
+			readOffset += frameSize;
+			frameCount++;
+
+			// ===== PRIMING PHASE =====
+			if (!encodingStarted) {
+				pushFrame(frame);
+				if (frameQueue.length >= PRIME_FRAMES) {
+					ffmpeg = spawnFFMPEG(videoWidth, videoHeight);
+
+					while (frameQueue.length > 0) {
+						const primeFrame = frameQueue.shift();
+						ffmpeg.stdin.write(primeFrame);
+					}
+
+					encodingStarted = true;
+					console.log(
+						" Streaming started (adaptive queue mode)",
+					);
+					console.log(
+						`  Resolution: ${videoWidth}x${videoHeight}`,
+					);
+					console.log(`  Target: ${TARGET_FPS} FPS`);
+					console.log(
+						`  Queue range: ${MIN_QUEUE_SIZE}-${MAX_QUEUE_SIZE} frames\n`,
+					);
+
+					setInterval(writeFrameToFFmpeg, FRAME_INTERVAL_MS);
+				}
+				continue;
+			}
+
+			pushFrame(frame);
+		}
+
+		if (readOffset > 0) {
+			buffer.copy(buffer, 0, readOffset, writeOffset);
+			writeOffset -= readOffset;
+		}
+	});
+
+	pipe.on("close", () => {
+		console.log("\n Pipe closed");
+		if (ffmpeg?.stdin.writable) {
+			setTimeout(() => {
+				ffmpeg.stdin.end();
+			}, 1000);
+		}
+	});
+
+	pipe.on("error", (err) => {
+		console.error("❌ Pipe error:", err);
+	});
 }
+
+// ================= BOOT =================
+
+(async function main() {
+	console.log(" Game Streaming Server\n");
+	console.log("Starting game capture pipeline...\n");
+
+	try {
+		startGame();
+		await injectDLL();
+		const pipe = await connectPipe();
+		handlePipe(pipe);
+	} catch (error) {
+		console.error("❌ Startup error:", error);
+		process.exit(1);
+	}
+})();
+
+//================= local socket =================
+
+let udpclient = dgram.createSocket("udp4");
+
+udpclient.on("message", (msg, rinfo) => {
+	console.log(
+		`ffmpeg transmited message ${msg.toString()} from ${rinfo.port} ,${rinfo.address}`,
+	);
+});
+
+udpclient.on("error", (err) => {
+	console.log(`erroe in udp:${err}`);
+});
+
+udpclient.bind(5000, "127.0.0.1");
