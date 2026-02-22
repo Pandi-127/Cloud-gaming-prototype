@@ -320,7 +320,7 @@ udpclient.on("error", (err) => {
 
 udpclient.bind(5000, "127.0.0.1");
 
-//======================================================
+//==================* HTTP Server *===============
 
 let server = http.creatServer((reg, res) => {
 	if (req === "/") {
@@ -352,3 +352,7 @@ let server = http.creatServer((reg, res) => {
 		res.end(" request not found");
 	}
 });
+
+//===================* Socket *===================
+
+let singnalsocket = Server(server);
