@@ -1,0 +1,8 @@
+{
+  "show_wrap_guides": true,
+  "indent_guides": {
+    "enabled": false
+  },
+  "always_treat_brackets_as_autoclosed": true,
+  "extend_comment_on_newline": false
+}

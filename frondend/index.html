@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1.0"
+		/>
+		<title>Game Stream Viewer</title>
+		<style>
+			* {
+				margin: 0;
+				padding: 0;
+				box-sizing: border-box;
+			}
+
+			body {
+				font-family:
+					"Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+				background: #0a0a0a;
+				color: #e0e0e0;
+				overflow: hidden;
+			}
+
+			.container {
+				display: flex;
+				flex-direction: column;
+				height: 100vh;
+				padding: 20px;
+				gap: 15px;
+			}
+
+			header {
+				background: linear-gradient(
+					135deg,
+					#667eea 0%,
+					#764ba2 100%
+				);
+				padding: 15px 20px;
+				border-radius: 8px;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+			}
+
+			h1 {
+				font-size: 20px;
+				font-weight: 600;
+			}
+
+			.status-badge {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				padding: 6px 12px;
+				background: rgba(0, 0, 0, 0.3);
+				border-radius: 20px;
+				font-size: 13px;
+				font-weight: 600;
+			}
+
+			.status-dot {
+				width: 10px;
+				height: 10px;
+				border-radius: 50%;
+				animation: pulse 2s infinite;
+			}
+
+			.status-dot.disconnected {
+				background: #ef5350;
+			}
+
+			.status-dot.connecting {
+				background: #ffa726;
+			}
+
+			.status-dot.connected {
+				background: #66bb6a;
+			}
+
+			@keyframes pulse {
+				0%,
+				100% {
+					opacity: 1;
+				}
+				50% {
+					opacity: 0.5;
+				}
+			}
+
+			.main-content {
+				flex: 1;
+				display: grid;
+				grid-template-columns: 1fr 350px;
+				gap: 15px;
+				min-height: 0;
+			}
+
+			.video-section {
+				background: #1a1a1a;
+				border-radius: 8px;
+				padding: 15px;
+				display: flex;
+				flex-direction: column;
+				gap: 12px;
+				box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+			}
+
+			.video-wrapper {
+				position: relative;
+				flex: 1;
+				background: #000;
+				border-radius: 6px;
+				overflow: hidden;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+			}
+
+			video {
+				width: 100%;
+				height: 100%;
+				object-fit: contain;
+			}
+
+			.video-overlay {
+				position: absolute;
+				top: 10px;
+				right: 10px;
+				background: rgba(0, 0, 0, 0.8);
+				padding: 8px 12px;
+				border-radius: 6px;
+				font-size: 11px;
+				font-family: "Courier New", monospace;
+				backdrop-filter: blur(10px);
+			}
+
+			.no-stream {
+				text-align: center;
+				color: #666;
+			}
+
+			.no-stream-icon {
+				font-size: 64px;
+				margin-bottom: 15px;
+				opacity: 0.3;
+			}
+
+			.controls {
+				display: flex;
+				gap: 8px;
+			}
+
+			button {
+				flex: 1;
+				background: #667eea;
+				color: white;
+				border: none;
+				padding: 10px;
+				border-radius: 6px;
+				font-size: 13px;
+				font-weight: 600;
+				cursor: pointer;
+				transition: all 0.2s;
+			}
+
+			button:hover:not(:disabled) {
+				background: #5568d3;
+				transform: translateY(-1px);
+			}
+
+			button:active:not(:disabled) {
+				transform: translateY(0);
+			}
+
+			button:disabled {
+				background: #333;
+				cursor: not-allowed;
+				opacity: 0.5;
+			}
+
+			.sidebar {
+				display: flex;
+				flex-direction: column;
+				gap: 15px;
+			}
+
+			.panel {
+				background: #1a1a1a;
+				border-radius: 8px;
+				padding: 15px;
+				box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+			}
+
+			.panel h3 {
+				font-size: 13px;
+				color: #667eea;
+				text-transform: uppercase;
+				letter-spacing: 1px;
+				margin-bottom: 12px;
+				padding-bottom: 8px;
+				border-bottom: 1px solid #2a2a2a;
+			}
+
+			.stat-row {
+				display: flex;
+				justify-content: space-between;
+				padding: 8px 0;
+				border-bottom: 1px solid #2a2a2a;
+				font-size: 12px;
+			}
+
+			.stat-row:last-child {
+				border-bottom: none;
+			}
+
+			.stat-label {
+				color: #999;
+			}
+
+			.stat-value {
+				color: #e0e0e0;
+				font-weight: 600;
+				font-family: "Courier New", monospace;
+			}
+
+			.log-container {
+				background: #0a0a0a;
+				border-radius: 4px;
+				padding: 10px;
+				max-height: 200px;
+				overflow-y: auto;
+				font-family: "Courier New", monospace;
+				font-size: 11px;
+			}
+
+			.log-entry {
+				padding: 3px 0;
+				display: flex;
+				gap: 8px;
+			}
+
+			.log-time {
+				color: #666;
+			}
+
+			.log-level {
+				padding: 1px 6px;
+				border-radius: 3px;
+				font-size: 9px;
+				font-weight: 700;
+				text-transform: uppercase;
+			}
+
+			.log-level.info {
+				background: #2196f3;
+				color: white;
+			}
+			.log-level.success {
+				background: #4caf50;
+				color: white;
+			}
+			.log-level.warning {
+				background: #ff9800;
+				color: white;
+			}
+			.log-level.error {
+				background: #f44336;
+				color: white;
+			}
+
+			.log-message {
+				color: #ccc;
+			}
+
+			@media (max-width: 1200px) {
+				.main-content {
+					grid-template-columns: 1fr;
+				}
+				.sidebar {
+					flex-direction: row;
+				}
+			}
+
+			/* Scrollbar styling */
+			::-webkit-scrollbar {
+				width: 8px;
+			}
+
+			::-webkit-scrollbar-track {
+				background: #1a1a1a;
+			}
+
+			::-webkit-scrollbar-thumb {
+				background: #667eea;
+				border-radius: 4px;
+			}
+
+			::-webkit-scrollbar-thumb:hover {
+				background: #5568d3;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="container">
+			<header>
+				<h1>🎮 Game Stream Viewer</h1>
+				<div class="status-badge">
+					<span
+						class="status-dot disconnected"
+						id="statusDot"
+					></span>
+					<span id="statusText">Disconnected</span>
+				</div>
+			</header>
+
+			<div class="main-content">
+				<!-- Video Section -->
+				<div class="video-section">
+					<div class="video-wrapper">
+						<video
+							id="videoElement"
+							autoplay
+							playsinline
+							muted
+						></video>
+						<div
+							class="video-overlay"
+							id="videoOverlay"
+							style="display: none"
+						>
+							<div>
+								Resolution:
+								<span id="resolution">-</span>
+							</div>
+							<div>
+								Latency: <span id="latency">-</span>
+							</div>
+						</div>
+						<div class="no-stream" id="noStream">
+							<div class="no-stream-icon">📺</div>
+							<div>Waiting for stream...</div>
+							<div
+								style="
+									font-size: 12px;
+									margin-top: 10px;
+									color: #555;
+								"
+							>
+								Make sure your Node.js server is running
+							</div>
+						</div>
+					</div>
+
+					<div class="controls">
+						<button id="connectBtn">Connect</button>
+						<button id="disconnectBtn" disabled>
+							Disconnect
+						</button>
+						<button id="fullscreenBtn" disabled>
+							Fullscreen
+						</button>
+					</div>
+				</div>
+
+				<!-- Sidebar -->
+				<div class="sidebar">
+					<!-- Connection Stats -->
+					<div class="panel">
+						<h3>Connection</h3>
+						<div class="stat-row">
+							<span class="stat-label">State</span>
+							<span class="stat-value" id="connState"
+								>Disconnected</span
+							>
+						</div>
+						<div class="stat-row">
+							<span class="stat-label">ICE State</span>
+							<span class="stat-value" id="iceState"
+								>-</span
+							>
+						</div>
+						<div class="stat-row">
+							<span class="stat-label">Signal State</span>
+							<span class="stat-value" id="signalState"
+								>-</span
+							>
+						</div>
+					</div>
+
+					<!-- Stream Stats -->
+					<div class="panel">
+						<h3>Stream</h3>
+						<div class="stat-row">
+							<span class="stat-label">Bitrate</span>
+							<span class="stat-value" id="bitrate"
+								>- kbps</span
+							>
+						</div>
+						<div class="stat-row">
+							<span class="stat-label">FPS</span>
+							<span class="stat-value" id="fps">-</span>
+						</div>
+						<div class="stat-row">
+							<span class="stat-label">Packets Lost</span>
+							<span class="stat-value" id="packetsLost"
+								>-</span
+							>
+						</div>
+						<div class="stat-row">
+							<span class="stat-label">Jitter</span>
+							<span class="stat-value" id="jitter">-</span>
+						</div>
+					</div>
+
+					<!-- Event Log -->
+					<div class="panel" style="flex: 1">
+						<h3>Event Log</h3>
+						<div
+							class="log-container"
+							id="logContainer"
+						></div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<script src="/socket.io/socket.io.js"></script>
+		<script src="https://unpkg.com/simple-peer@9.11.1/simplepeer.min.js"></script>
+		<script src="client.js"></script>
+	</body>
+</html>

@@ -2,47 +2,11 @@ import { spawn } from "child_process";
 import net from "node:net";
 import { exec } from "child_process";
 import dgram from "node:dgram";
-
-// ================= PATHS =================
-
-const GAME_PATH =
-	"D:\\games\\games installer\\INSIDE-AnkerGames\\INSIDE\\INSIDE.exe";
-
-const INJECTOR_PATH =
-	"D:\\Projects\\Cloud-Gaming-Prototype\\Injector\\injector\\x64\\Debug\\injector.exe";
-
-const FFMPEG_PATH =
-	"D:\\Projects\\tools-instalers\\installed\\ffmpeg-8.0.1-essentials_build\\bin\\ffmpeg.exe";
-
-// ================= CONSTANTS =================
-
-const HEADER_SIZE = 40;
-const MAGIC = 0x4d415246;
-
-const TARGET_FPS = 60;
-const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
-
-const MAX_PAYLOAD = 1920 * 1080 * 4;
-const MAX_BUFFER = MAX_PAYLOAD * 2;
-
-const PRIME_FRAMES = 4;
-
-const MIN_QUEUE_SIZE = 2;
-const MAX_QUEUE_SIZE = 8;
-const TARGET_QUEUE_SIZE = 4;
-
-let dynamicQueueMax = TARGET_QUEUE_SIZE;
-
-let videoWidth = null;
-let videoHeight = null;
-
-let frameQueue = [];
-let frameCount = 0;
-let droppedFrames = 0;
-
-let ffmpeg = null;
-let ffmpegReady = true;
-let encodingStarted = false;
+import http from "http";
+import fs from "fs";
+import path from "path";
+import { Server } from "socket.io";
+import nodeDataChannel from "node-datachannel";
 
 // ================= GAME =================
 
@@ -355,3 +319,36 @@ udpclient.on("error", (err) => {
 });
 
 udpclient.bind(5000, "127.0.0.1");
+
+//======================================================
+
+let server = http.creatServer((reg, res) => {
+	if (req === "/") {
+		fs.readFile(path, (err, data) => {
+			if (err) {
+				res.writeHead(500);
+				res.end("errer in reading HTML");
+			}
+			if (data) {
+				res.writeHead(200, { "Content-type": "text/html" });
+				res.end(data);
+			}
+		});
+	} else if (reg === "/client.js") {
+		fs.readFile(path, (errer, data) => {
+			if (errer) {
+				res.writeHead(500);
+				res.end("couldn't read client.js file");
+			}
+			if (data) {
+				res.writeHead(200, {
+					"Content-Type": "application/javascript",
+				});
+				res.end(data);
+			}
+		});
+	} else {
+		res.writeHead(404);
+		res.end(" request not found");
+	}
+});
