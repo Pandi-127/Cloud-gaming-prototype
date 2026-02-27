@@ -354,5 +354,41 @@ let server = http.creatServer((reg, res) => {
 });
 
 //===================* Socket *===================
+let peerconnection = null;
+let videoTrack = null;
 
-let singnalsocket = Server(server);
+let io = Server(server);
+
+io.on("connection", (socket) => {
+	if (!peerconnection) {
+		initwebrtc();
+	}
+
+	peerconnection.onLocalCandidate((candidate, mid) => {
+		socket.emit("signal", { type: Candicate, candidate, mid });
+	});
+	socket.on("offer", (data) => {
+		if (data.type == "offer") {
+			peerconnection.setRemoteDescription(data.sdp, "offer");
+		}
+		let offer = peerconnection.setLocalDescription(offer);
+	});
+
+	socket.emmit("offer", { type: "answer", sdp: offer });
+});
+
+//=======================WEB-RTC==================
+
+function initwebrtc() {
+	peerconnection = nodeDataChannel.peerConnection("gameserver", {
+		iceservers: [],
+	});
+
+	videoTrack = new nodeDataChannel.Video("video", SendOnly);
+	videoTrack.addH264Codec(96);
+	peerconnection.addTrack(videoTrack);
+
+	peerconnection.onStateChange((state) => {
+		console.log("conection Stage:", state);
+	});
+}
