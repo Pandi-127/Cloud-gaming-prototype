@@ -7,6 +7,51 @@ import fs from "fs";
 import path from "path";
 import { Server } from "socket.io";
 import nodeDataChannel from "node-datachannel";
+// ================= PATHS =================
+
+const GAME_PATH =
+	"D:\\games\\games installer\\INSIDE-AnkerGames\\INSIDE\\INSIDE.exe";
+
+const INJECTOR_PATH =
+	"D:\\Projects\\Cloud-Gaming-Prototype\\Injector\\injector\\x64\\Debug\\injector.exe";
+
+const FFMPEG_PATH =
+	"D:\\Projects\\tools-instalers\\installed\\ffmpeg-8.0.1-essentials_build\\bin\\ffmpeg.exe";
+
+// ================= CONSTANTS =================
+
+const HEADER_SIZE = 40;
+const MAGIC = 0x4d415246;
+
+const TARGET_FPS = 60;
+const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
+
+const MAX_PAYLOAD = 1920 * 1080 * 4;
+const MAX_BUFFER = MAX_PAYLOAD * 2;
+
+const PRIME_FRAMES = 4;
+
+const MIN_QUEUE_SIZE = 2;
+const MAX_QUEUE_SIZE = 8;
+const TARGET_QUEUE_SIZE = 4;
+
+let dynamicQueueMax = TARGET_QUEUE_SIZE;
+
+let videoWidth = null;
+let videoHeight = null;
+
+let frameQueue = [];
+let frameCount = 0;
+let droppedFrames = 0;
+
+let ffmpeg = null;
+let ffmpegReady = true;
+let encodingStarted = false;
+
+//================= Globels ===============
+
+let peerconnection = null;
+let videoTrack = null;
 
 // ================= GAME =================
 
@@ -287,39 +332,6 @@ function handlePipe(pipe) {
 	});
 }
 
-// ================= BOOT =================
-
-(async function main() {
-	console.log(" Game Streaming Server\n");
-	console.log("Starting game capture pipeline...\n");
-
-	try {
-		startGame();
-		await injectDLL();
-		const pipe = await connectPipe();
-		handlePipe(pipe);
-	} catch (error) {
-		console.error("❌ Startup error:", error);
-		process.exit(1);
-	}
-})();
-
-//================= local socket =================
-
-let udpclient = dgram.createSocket("udp4");
-
-udpclient.on("message", (msg, rinfo) => {
-	console.log(
-		`ffmpeg transmited message ${msg.toString()} from ${rinfo.port} ,${rinfo.address}`,
-	);
-});
-
-udpclient.on("error", (err) => {
-	console.log(`erroe in udp:${err}`);
-});
-
-udpclient.bind(5000, "127.0.0.1");
-
 //==================* HTTP Server *===============
 
 let server = http.creatServer((reg, res) => {
@@ -354,9 +366,6 @@ let server = http.creatServer((reg, res) => {
 });
 
 //===================* Socket *===================
-let peerconnection = null;
-let videoTrack = null;
-
 let io = Server(server);
 
 io.on("connection", (socket) => {
@@ -392,3 +401,36 @@ function initwebrtc() {
 		console.log("conection Stage:", state);
 	});
 }
+
+//================= local socket =================
+
+let udpclient = dgram.createSocket("udp4");
+
+udpclient.on("message", (msg, rinfo) => {
+	console.log(
+		`ffmpeg transmited message ${msg.toString()} from ${rinfo.port} ,${rinfo.address}`,
+	);
+});
+
+udpclient.on("error", (err) => {
+	console.log(`erroe in udp:${err}`);
+});
+
+udpclient.bind(5000, "127.0.0.1");
+
+// ================= BOOT =================
+
+(async function main() {
+	console.log(" Game Streaming Server\n");
+	console.log("Starting game capture pipeline...\n");
+
+	try {
+		startGame();
+		await injectDLL();
+		const pipe = await connectPipe();
+		handlePipe(pipe);
+	} catch (error) {
+		console.error("❌ Startup error:", error);
+		process.exit(1);
+	}
+})();
