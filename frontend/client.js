@@ -121,14 +121,14 @@ class StreamClient {
 			initiator: true,
 			trickle: false,
 			config: {
-				iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+				iceServers: [],
 			},
 		});
 
 		// Peer events
 		this.peer.on("signal", (data) => {
 			this.log("info", "Sending offer to server");
-			this.socket.emit("signal", data);
+			this.socket.emit("offer", data);
 		});
 
 		this.peer.on("connect", () => {

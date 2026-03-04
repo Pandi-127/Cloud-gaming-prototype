@@ -12,8 +12,10 @@ import nodeDataChannel from "node-datachannel";
 const GAME_PATH =
 	"D:\\games\\games installer\\INSIDE-AnkerGames\\INSIDE\\INSIDE.exe";
 
-const INJECTOR_PATH =
-	"D:\\Projects\\Cloud-Gaming-Prototype\\Injector\\injector\\x64\\Debug\\injector.exe";
+const INJECTOR_PATH = path.join(
+	process.cwd(),
+	"..\\Injector\\injector\\x64\\Debug\\injector.exe",
+);
 
 const FFMPEG_PATH =
 	"D:\\Projects\\tools-instalers\\installed\\ffmpeg-8.0.1-essentials_build\\bin\\ffmpeg.exe";
@@ -87,9 +89,10 @@ function pushFrame(frame) {
 				frameQueue.shift();
 				droppedFrames++;
 			}
-			console.warn(
-				`Emergency drop: queue overflowed to ${frameQueue.length + 3}`,
-			);
+			console
+				.warn
+				//	`Emergency drop: queue overflowed to ${frameQueue.length + 3}`,
+				();
 		}
 		droppedFrames++;
 		return;
@@ -101,9 +104,10 @@ function pushFrame(frame) {
 // ================= FFMPEG =================
 
 function spawnFFMPEG(width, height) {
-	console.log(
-		`Starting FFmpeg NVENC (adaptive, low-latency) ${width}x${height}`,
-	);
+	/*console
+		.log
+			`Starting FFmpeg NVENC (adaptive, low-latency) ${width}x${height}`,
+		();*/
 
 	const ffmpegProcess = spawn(
 		FFMPEG_PATH,
@@ -111,7 +115,6 @@ function spawnFFMPEG(width, height) {
 			"-y",
 			"-loglevel",
 			"warning",
-			"-stats",
 
 			"-fflags",
 			"nobuffer",
@@ -293,7 +296,7 @@ function handlePipe(pipe) {
 					}
 
 					encodingStarted = true;
-					console.log(
+					/* 	console.log(
 						" Streaming started (adaptive queue mode)",
 					);
 					console.log(
@@ -302,7 +305,7 @@ function handlePipe(pipe) {
 					console.log(`  Target: ${TARGET_FPS} FPS`);
 					console.log(
 						`  Queue range: ${MIN_QUEUE_SIZE}-${MAX_QUEUE_SIZE} frames\n`,
-					);
+					);*/
 
 					setInterval(writeFrameToFFmpeg, FRAME_INTERVAL_MS);
 				}
@@ -334,31 +337,37 @@ function handlePipe(pipe) {
 
 //==================* HTTP Server *===============
 
-let server = http.creatServer((reg, res) => {
-	if (req === "/") {
-		fs.readFile(path, (err, data) => {
-			if (err) {
-				res.writeHead(500);
-				res.end("errer in reading HTML");
-			}
-			if (data) {
-				res.writeHead(200, { "Content-type": "text/html" });
-				res.end(data);
-			}
-		});
-	} else if (reg === "/client.js") {
-		fs.readFile(path, (errer, data) => {
-			if (errer) {
-				res.writeHead(500);
-				res.end("couldn't read client.js file");
-			}
-			if (data) {
-				res.writeHead(200, {
-					"Content-Type": "application/javascript",
-				});
-				res.end(data);
-			}
-		});
+let server = http.createServer((req, res) => {
+	if (req.url === "/") {
+		fs.readFile(
+			path.join(process.cwd(), "..", "frontend", "index.html"),
+			(err, data) => {
+				if (err) {
+					res.writeHead(500);
+					res.end("errer in reading HTML");
+				}
+				if (data) {
+					res.writeHead(200, { "Content-type": "text/html" });
+					res.end(data);
+				}
+			},
+		);
+	} else if (req.url === "/client.js") {
+		fs.readFile(
+			path.join(process.cwd(), "..", "frontend", "client.js"),
+			(errer, data) => {
+				if (errer) {
+					res.writeHead(500);
+					res.end("couldn't read client.js file");
+				}
+				if (data) {
+					res.writeHead(200, {
+						"Content-Type": "application/javascript",
+					});
+					res.end(data);
+				}
+			},
+		);
 	} else {
 		res.writeHead(404);
 		res.end(" request not found");
@@ -366,15 +375,16 @@ let server = http.creatServer((reg, res) => {
 });
 
 //===================* Socket *===================
-let io = Server(server);
+let io = new Server(server);
 
 io.on("connection", (socket) => {
+	console.log("socket connected");
 	if (!peerconnection) {
 		initwebrtc();
 	}
 
 	peerconnection.onLocalCandidate((candidate, mid) => {
-		socket.emit("signal", { type: Candicate, candidate, mid });
+		socket.emit("signal", { type: candidate, candidate, mid });
 	});
 	socket.on("offer", (data) => {
 		if (data.type == "offer") {
@@ -389,11 +399,10 @@ io.on("connection", (socket) => {
 //=======================WEB-RTC==================
 
 function initwebrtc() {
-	peerconnection = nodeDataChannel.peerConnection("gameserver", {
-		iceservers: [],
+	peerconnection = new nodeDataChannel.PeerConnection("gameserver", {
+		iceServers: [],
 	});
-
-	videoTrack = new nodeDataChannel.Video("video", SendOnly);
+	videoTrack = new nodeDataChannel.Video("video", "sendonly");
 	videoTrack.addH264Codec(96);
 	peerconnection.addTrack(videoTrack);
 
@@ -407,9 +416,9 @@ function initwebrtc() {
 let udpclient = dgram.createSocket("udp4");
 
 udpclient.on("message", (msg, rinfo) => {
-	console.log(
+	/*console.log(
 		`ffmpeg transmited message ${msg.toString()} from ${rinfo.port} ,${rinfo.address}`,
-	);
+		);*/
 });
 
 udpclient.on("error", (err) => {
@@ -429,6 +438,9 @@ udpclient.bind(5000, "127.0.0.1");
 		await injectDLL();
 		const pipe = await connectPipe();
 		handlePipe(pipe);
+		server.listen(3000, "0.0.0.0", () => {
+			console.log("http server listening on port :3000");
+		});
 	} catch (error) {
 		console.error("❌ Startup error:", error);
 		process.exit(1);
