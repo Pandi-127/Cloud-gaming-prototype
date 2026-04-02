@@ -4,13 +4,174 @@
 		<meta charset="UTF-8" />
 		<meta
 			name="viewport"
-			content="width=device-width, initial-scale=1.0"
+			content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
 		/>
 		<title>Game Stream Viewer</title>
+		<style>
+			html,
+			body {
+				margin: 0;
+				padding: 0;
+				width: 100vw;
+				height: 100vh;
+				background-color: black;
+				overflow: hidden;
+				overscroll-behavior: none;
+				touch-action: none;
+				user-select: none;
+				-webkit-user-select: none;
+				font-family: Arial, sans-serif;
+			}
+
+			.video {
+				position: absolute;
+				top: 0;
+				left: 0;
+				width: 100vw;
+				height: 100vh;
+				object-fit: cover;
+				z-index: 1;
+				pointer-events: none;
+			}
+
+			#top-bar {
+				position: absolute;
+				top: 15px;
+				right: 20px;
+				z-index: 20;
+			}
+
+			#controller-overlay {
+				position: absolute;
+				bottom: 20px;
+				left: 0;
+				right: 0;
+				padding: 0 40px;
+				z-index: 10;
+				display: flex;
+				justify-content: space-between;
+				align-items: flex-end;
+				pointer-events: none;
+			}
+
+			.d-pad {
+				display: grid;
+				grid-template-columns: repeat(3, 60px);
+				grid-template-rows: repeat(3, 67px);
+				gap: 3px;
+				pointer-events: auto;
+				transform: translateY(10px);
+			}
+			#btn-up {
+				grid-column: 2;
+				grid-row: 1;
+			}
+			#btn-left {
+				grid-column: 1;
+				grid-row: 2;
+			}
+			#btn-right {
+				grid-column: 3;
+				grid-row: 2;
+			}
+			#btn-down {
+				grid-column: 2;
+				grid-row: 3;
+			}
+
+			.action-buttons {
+				display: flex;
+				align-items: flex-end;
+				gap: 15px;
+				pointer-events: auto;
+			}
+			#btn-grap {
+				margin-bottom: 60px;
+			}
+
+			.btn {
+				width: 7.1vw;
+				height: 14vh;
+				border-radius: 50%;
+				background-color: rgba(0, 0, 0, 0.1);
+				border: 1px solid rgba(255, 255, 255, 0.05);
+				color: rgba(255, 255, 255, 0.1);
+				font-size: 15px;
+				font-weight: 900;
+				display: flex;
+				justify-content: center;
+				align-items: center;
+				cursor: pointer;
+				backdrop-filter: blur(3px);
+				-webkit-backdrop-filter: blur(3px);
+				outline: none;
+				transition: all 0.5s;
+				touch-action: none;
+			}
+
+			.btn:active {
+				background-color: rgba(0, 0, 0, 0.8);
+				border-color: rgba(180, 0, 0, 0.7);
+				box-shadow: 0 0 8px 2px rgba(180, 0, 0, 0.5);
+				transform: scale(0.9);
+			}
+
+			#btn-JUMP,
+			#btn-grap {
+				font-size: 9px;
+				font-weight: 400;
+			}
+
+			.fs-icon {
+				font-size: 18px;
+				color: rgba(255, 255, 255, 0.5);
+				width: 1vw;
+				height: 3vh;
+			}
+			#btn-fs {
+				width: 2.5vw;
+				height: 5vh;
+				min-width: 35px;
+				min-height: 35px;
+			}
+		</style>
 	</head>
 	<body>
-		<h1>no-UI yet..</h1>
+		<video
+			id="game-stream"
+			class="video"
+			autoplay
+			playsinline
+			muted
+		></video>
+
+		<div id="top-bar">
+			<button class="btn" id="btn-fs">&#9974;</button>
+		</div>
+
+		<div id="controller-overlay">
+			<div class="d-pad">
+				<button class="btn" id="btn-up" data-key="W">&uarr;</button>
+				<button class="btn" id="btn-left" data-key="A">
+					&larr;
+				</button>
+				<button class="btn" id="btn-right" data-key="D">
+					&rarr;
+				</button>
+				<button class="btn" id="btn-down" data-key="S">
+					&darr;
+				</button>
+			</div>
+
+			<div class="action-buttons">
+				<button class="btn" id="btn-JUMP" data-key="SPACE">
+					Jump
+				</button>
+				<button class="btn" id="btn-grap" data-key="E">Grap</button>
+			</div>
+		</div>
+
 		<script src="/socket.io/socket.io.js"></script>
-		<script src="client.js"></script>
+		<script src="/client.js"></script>
 	</body>
 </html>

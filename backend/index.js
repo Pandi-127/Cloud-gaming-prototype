@@ -4,10 +4,15 @@ import dgram from "node:dgram";
 import http from "http";
 import fs from "fs";
 import path from "path";
+import { performance } from "node:perf_hooks";
 import { Server } from "socket.io";
-import nodeDataChannel from "node-datachannel";
+import { RTCPeerConnection, MediaStreamTrack } from "werift";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const ViGEmClient = require("vigemclient");
 
 // ================= PATHS =================
+
 const GAME_PATH =
 	"D:\\games\\games installer\\INSIDE-AnkerGames\\INSIDE\\INSIDE.exe";
 const INJECTOR_PATH = path.join(
@@ -18,16 +23,17 @@ const FFMPEG_PATH =
 	"D:\\Projects\\tools-instalers\\installed\\ffmpeg-8.0.1-essentials_build\\bin\\ffmpeg.exe";
 
 // ================= CONSTANTS =================
+
 const HEADER_SIZE = 40;
 const MAGIC = 0x4d415246;
 const TARGET_FPS = 60;
-const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
 const MAX_PAYLOAD = 1920 * 1080 * 4;
-const MAX_BUFFER = MAX_PAYLOAD * 2;
+const MAX_BUFFER = MAX_PAYLOAD * 4;
 const PRIME_FRAMES = 4;
 const TARGET_QUEUE_SIZE = 4;
 
-let dynamicQueueMax = TARGET_QUEUE_SIZE;
+const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
+
 let videoWidth = null;
 let videoHeight = null;
 let frameQueue = [];
@@ -37,9 +43,34 @@ let ffmpeg = null;
 let ffmpegReady = true;
 let encodingStarted = false;
 
+let isClientConnected = false;
+
+let lastFrameTime = 0;
+
 //================= Globals ===============
+
 let peerconnection = null;
 let videoTrack = null;
+let sender = null;
+let videoSsrc = null;
+let controller = null;
+
+// ================= ZERO-ALLOCATION MEMORY POOL =================
+
+const POOL_SIZE = 12;
+const framePool = Array.from({ length: POOL_SIZE }, () =>
+	Buffer.allocUnsafe(MAX_PAYLOAD),
+);
+let poolWriteIndex = 0;
+
+const keyTo_XBOX_Map = {
+	W: "UP",
+	A: "LEFT",
+	S: "DOWN",
+	D: "RIGHT",
+	SPACE: "A",
+	E: "X",
+};
 
 // ================= GAME =================
 function startGame() {
@@ -65,19 +96,17 @@ function connectPipe() {
 	});
 }
 
+// ================= FRAME PUSH =================
 function pushFrame(frame) {
-	const frameCopy = Buffer.from(frame);
-	if (frameQueue.length >= dynamicQueueMax) {
-		if (frameQueue.length >= dynamicQueueMax + 3) {
-			while (frameQueue.length >= dynamicQueueMax) {
-				frameQueue.shift();
-				droppedFrames++;
-			}
-		}
+	if (frameQueue.length >= TARGET_QUEUE_SIZE) {
+		frameQueue.shift();
 		droppedFrames++;
-		return;
 	}
-	frameQueue.push(frameCopy);
+
+	const pooledBuffer = framePool[poolWriteIndex];
+	frame.copy(pooledBuffer, 0, 0, frame.length);
+	frameQueue.push(pooledBuffer.subarray(0, frame.length));
+	poolWriteIndex = (poolWriteIndex + 1) % POOL_SIZE;
 }
 
 // ================= FFMPEG =================
@@ -85,11 +114,16 @@ function spawnFFMPEG(width, height) {
 	const ffmpegProcess = spawn(
 		FFMPEG_PATH,
 		[
+			"-probesize",
+			"32",
+			"-analyzeduration",
+			"0",
+			"-fflags",
+			"nobuffer+flush_packets",
+
 			"-y",
 			"-loglevel",
 			"warning",
-			"-fflags",
-			"nobuffer",
 			"-max_delay",
 			"0",
 			"-f",
@@ -116,12 +150,14 @@ function spawnFFMPEG(width, height) {
 			"1",
 			"-rc",
 			"cbr",
+
 			"-b:v",
-			"10M",
+			"5M",
 			"-maxrate",
-			"10M",
+			"5M",
 			"-bufsize",
-			"1.5M",
+			"500k",
+
 			"-g",
 			"60",
 			"-bf",
@@ -133,7 +169,7 @@ function spawnFFMPEG(width, height) {
 			"-forced-idr",
 			"1",
 			"-profile:v",
-			"high",
+			"baseline",
 			"-level",
 			"4.2",
 			"-spatial-aq",
@@ -144,8 +180,10 @@ function spawnFFMPEG(width, height) {
 			"0",
 			"-no-scenecut",
 			"1",
+			"-payload_type",
+			"96",
 			"-f",
-			"h264",
+			"rtp",
 			"udp://127.0.0.1:5000",
 		],
 		{ stdio: ["pipe", "inherit", "inherit"] },
@@ -153,10 +191,23 @@ function spawnFFMPEG(width, height) {
 
 	ffmpegProcess.stdin.on("drain", () => {
 		ffmpegReady = true;
+
+		flushQueueToFFmpeg();
 	});
+
+	ffmpegProcess.stdin.on("error", (err) => {
+		if (err.code === "EOF" || err.code === "EPIPE") {
+			console.warn("FFmpeg input stream closed (EOF).");
+			ffmpegReady = false;
+		} else {
+			console.error("FFmpeg stdin error:", err);
+		}
+	});
+
 	ffmpegProcess.on("error", (err) => {
-		console.error("❌ FFmpeg error:", err);
+		console.error("FFmpeg error:", err);
 	});
+
 	ffmpegProcess.on("exit", (code) => {
 		console.log(`FFmpeg exited with code ${code}`);
 	});
@@ -173,14 +224,10 @@ function spawnFFMPEG(width, height) {
 	return ffmpegProcess;
 }
 
-function writeFrameToFFmpeg() {
-	if (
-		!ffmpeg ||
-		!ffmpeg.stdin.writable ||
-		!ffmpegReady ||
-		frameQueue.length === 0
-	)
-		return;
+function flushQueueToFFmpeg() {
+	if (!ffmpeg || !ffmpeg.stdin.writable || !ffmpegReady) return;
+	if (frameQueue.length === 0) return;
+
 	const frame = frameQueue.shift();
 	ffmpegReady = ffmpeg.stdin.write(frame);
 }
@@ -191,11 +238,16 @@ function handlePipe(pipe) {
 	let writeOffset = 0;
 
 	pipe.on("data", (chunk) => {
+		if (!isClientConnected) {
+			return;
+		}
+
 		if (writeOffset + chunk.length > buffer.length) {
 			console.warn("Buffer overflow - resetting");
 			writeOffset = 0;
 			return;
 		}
+
 		chunk.copy(buffer, writeOffset);
 		writeOffset += chunk.length;
 		let readOffset = 0;
@@ -228,15 +280,21 @@ function handlePipe(pipe) {
 				pushFrame(frame);
 				if (frameQueue.length >= PRIME_FRAMES) {
 					ffmpeg = spawnFFMPEG(videoWidth, videoHeight);
-					while (frameQueue.length > 0) {
-						ffmpeg.stdin.write(frameQueue.shift());
-					}
 					encodingStarted = true;
-					setInterval(writeFrameToFFmpeg, FRAME_INTERVAL_MS);
+
+					setTimeout(() => flushQueueToFFmpeg(), 0);
 				}
 				continue;
 			}
-			pushFrame(frame);
+
+			const now = performance.now();
+			if (now - lastFrameTime >= FRAME_INTERVAL_MS) {
+				lastFrameTime = now;
+				pushFrame(frame);
+				flushQueueToFFmpeg();
+			} else {
+				droppedFrames++;
+			}
 		}
 
 		if (readOffset > 0) {
@@ -246,16 +304,19 @@ function handlePipe(pipe) {
 	});
 
 	pipe.on("close", () => {
-		console.log("\n Pipe closed");
-		if (ffmpeg?.stdin.writable)
+		console.log("\nPipe closed");
+		if (ffmpeg?.stdin.writable) {
 			setTimeout(() => {
 				ffmpeg.stdin.end();
 			}, 1000);
+		}
 	});
-	pipe.on("error", (err) => console.error("❌ Pipe error:", err));
+
+	pipe.on("error", (err) => console.error("Pipe error:", err));
 }
 
 //==================* HTTP Server *===============
+
 let server = http.createServer((req, res) => {
 	if (req.url === "/") {
 		fs.readFile(
@@ -292,7 +353,10 @@ let server = http.createServer((req, res) => {
 });
 
 // ================= SOCKET.IO SIGNALING SERVER =================
-let io = new Server(server);
+
+let io = new Server(server, {
+	cors: { origin: "*" },
+});
 
 io.on("connection", (socket) => {
 	console.log("Socket connected:", socket.id);
@@ -300,52 +364,178 @@ io.on("connection", (socket) => {
 });
 
 // ================= WEBRTC INITIALIZATION =================
+
 function initWebRTC(socket) {
-	peerconnection = new nodeDataChannel.PeerConnection("gameserver", {
-		iceServers: ["stun:stun.l.google.com:19302"],
+	videoTrack = new MediaStreamTrack({ kind: "video" });
+
+	peerconnection = new RTCPeerConnection({
+		iceServers: [],
+		codecs: {
+			video: [
+				{
+					mimeType: "video/H264",
+					clockRate: 90000,
+					payloadType: 96,
+					parameters: {
+						"packetization-mode": "1",
+						"profile-level-id": "42e02a",
+					},
+				},
+			],
+		},
 	});
 
-	socket.on("offer", (data) => {
-		if (data.type === "offer") {
-			peerconnection.setRemoteDescription(data.sdp, data.type);
+	sender = peerconnection.addTrack(videoTrack);
 
-			peerconnection.onLocalDescription((data) => {
-				socket.emit("answer", { type: data.type, sdp: data.sdp });
+	peerconnection.onIceCandidate.subscribe((candidate) => {
+		if (candidate) {
+			socket.emit("server-ICE", candidate.toJSON());
+		}
+	});
+
+	socket.on("offer", async (data) => {
+		if (data.type === "offer" || data.type === "Offer") {
+			await peerconnection.setRemoteDescription(data);
+			await peerconnection.setLocalDescription(
+				await peerconnection.createAnswer(),
+			);
+
+			const sdp = peerconnection.localDescription.sdp;
+			const match = sdp.match(/a=ssrc:(\d+)/);
+			if (match) {
+				videoSsrc = parseInt(match[1], 10);
+				console.log("✓ WebRTC SSRC Negotiated:", videoSsrc);
+			}
+
+			socket.emit("answer", {
+				type: peerconnection.localDescription.type,
+				sdp: peerconnection.localDescription.sdp,
 			});
 		}
 	});
+
+	socket.on("client-ICE", async (data) => {
+		if (data.candidate) {
+			await peerconnection.addIceCandidate({
+				candidate: data.candidate,
+				sdpMid: data.sdpMid,
+				sdpMLineIndex: data.sdpMLineIndex,
+			});
+		}
+	});
+
+	peerconnection.connectionStateChange.subscribe((state) => {
+		console.log("Werift PeerConnection state:", state);
+
+		if (state === "connected") {
+			isClientConnected = true;
+			console.log("Client ready! Opening the video gates");
+		} else if (
+			state === "disconnected" ||
+			state === "failed" ||
+			state === "closed"
+		) {
+			isClientConnected = false;
+			if (ffmpeg) ffmpeg.kill("SIGINT");
+			encodingStarted = false;
+		}
+	});
+
+	peerconnection.onDataChannel.subscribe((dc) => {
+		dc.onMessage.subscribe((data) => {
+			let input = JSON.parse(data.toString());
+			handleController(input.key, input.action);
+		});
+	});
 }
 
-//================= local socket =================
+//================= UDP PACKET MANIPULATOR =================
+
 let udpclient = dgram.createSocket("udp4");
 
 udpclient.on("message", (msg) => {
-	// Actually route the UDP stream to the WebRTC track
-	if (videoTrack) {
-		try {
-			videoTrack.sendMessageBinary(msg);
-		} catch (error) {
-			// Ignore closed pipe errors
+	try {
+		if (
+			sender &&
+			peerconnection?.connectionState === "connected" &&
+			videoSsrc
+		) {
+			const marker = msg.readUInt8(1) & 0x80;
+			msg.writeUInt8(marker | 96, 1);
+			msg.writeUInt32BE(videoSsrc, 8);
+
+			sender.sendRtp(msg);
 		}
+	} catch (error) {
+		console.loq(" Ignore partial fram");
 	}
 });
 
-udpclient.on("error", (err) => console.log(`error in udp:${err}`));
-udpclient.bind(5000, "127.0.0.1");
+udpclient.on("error", (err) => console.log(`UDP error: ${err}`));
+
+udpclient.bind(5000, "127.0.0.1", () => {
+	try {
+		udpclient.setRecvBufferSize(20 * 1080 * 1080);
+		console.log("✓ UDP Receive Buffer expanded");
+	} catch (e) {
+		console.warn(
+			"Could not expand UDP buffer. Run Node as Administrator.",
+		);
+	}
+});
 
 // ================= BOOT =================
+
 (async function main() {
-	console.log(" Game Streaming Server\n");
+	console.log("Game Streaming Server\n");
 	try {
 		startGame();
 		await injectDLL();
 		const pipe = await connectPipe();
 		handlePipe(pipe);
 		server.listen(3000, "0.0.0.0", () => {
-			console.log("http server listening on port :3000");
+			console.log("HTTP server listening on: http://127.0.0.1:3000");
 		});
 	} catch (error) {
-		console.error("❌ Startup error:", error);
+		console.error("Startup error:", error);
 		process.exit(1);
 	}
 })();
+
+//===========================| Virtual Controller |====================
+
+try {
+	let client = new ViGEmClient();
+	client.connect();
+	controller = client.createX360Controller();
+	controller.updateMode = "manual";
+	controller.connect();
+	console.log("Controller created");
+} catch (e) {
+	console.warn(`Error creating controller: ${e}`);
+}
+
+function handleController(key, keyValue) {
+	if (keyValue === undefined || !key || !controller) {
+		return;
+	}
+
+	let ispressed = keyValue === 1;
+
+	if (key === "W") {
+		controller.axis.leftY.setValue(ispressed ? 32767 : 0);
+	} else if (key === "S") {
+		controller.axis.leftY.setValue(ispressed ? -32768 : 0);
+	} else if (key === "A") {
+		controller.axis.leftX.setValue(ispressed ? -32768 : 0);
+	} else if (key === "D") {
+		controller.axis.leftX.setValue(ispressed ? 32767 : 0);
+	} else {
+		let x360Key = keyTo_XBOX_Map[key];
+		if (x360Key && controller.button[x360Key]) {
+			controller.button[x360Key].setValue(ispressed);
+		}
+	}
+
+	controller.update();
+}

@@ -1,8 +1,4 @@
-﻿// ===============================
-// capture.cpp
-// ===============================
-
-#include "pch.h"
+﻿#include "pch.h"
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -27,7 +23,7 @@ std::atomic<bool> g_Running{ true };
 std::atomic<uint64_t> g_FrameId{ 0 };
 
 // ============================================================
-// Ring Buffer
+// Ring Buffer (For Video Frames)
 // ============================================================
 
 constexpr int RING_SIZE = 3;
@@ -49,13 +45,15 @@ struct RingBuffer {
 RingBuffer g_Ring;
 
 // ============================================================
-// Frame Header (40 bytes)
+// Data Structures (Network Contracts)
 // ============================================================
 
 #pragma pack(push, 1)
+
+// 40-byte Frame Header sent out to Node.js
 struct FrameHeader {
-    uint32_t magic;        // 'FRAM'
-    uint32_t headerSize;   // sizeof(FrameHeader)
+    uint32_t magic;      // 0x4D415246 ('FRAM')
+    uint32_t headerSize;
     uint64_t frameId;
     uint64_t writeTimeNs;
     uint32_t width;
@@ -63,10 +61,13 @@ struct FrameHeader {
     uint32_t rowPitch;
     uint32_t payloadSize;
 };
+
+
+
 #pragma pack(pop)
 
 // ============================================================
-// Timing
+// Timing Utility
 // ============================================================
 
 uint64_t NowNs() {
@@ -77,11 +78,11 @@ uint64_t NowNs() {
 }
 
 // ============================================================
-// Named Pipe
+// Thread 1: Outbound Video Frames (Consumer Thread)
 // ============================================================
 
-HANDLE CreatePipeServer() {
-    return CreateNamedPipeA(
+DWORD WINAPI ConsumerThread(LPVOID) {
+    HANDLE pipe = CreateNamedPipeA(
         "\\\\.\\pipe\\frame_pipe",
         PIPE_ACCESS_OUTBOUND,
         PIPE_TYPE_BYTE | PIPE_WAIT,
@@ -91,19 +92,11 @@ HANDLE CreatePipeServer() {
         0,
         nullptr
     );
-}
 
-// ============================================================
-// Consumer Thread
-// ============================================================
-
-DWORD WINAPI ConsumerThread(LPVOID) {
-    HANDLE pipe = CreatePipeServer();
-    if (pipe == INVALID_HANDLE_VALUE)
-        return 0;
+    if (pipe == INVALID_HANDLE_VALUE) return 0;
 
     ConnectNamedPipe(pipe, nullptr);
-    OutputDebugStringA("[DLL] Pipe connected\n");
+    OutputDebugStringA("[DLL] Frame Pipe connected\n");
 
     while (g_Running) {
         uint32_t r = g_Ring.readIndex.load();
@@ -116,10 +109,9 @@ DWORD WINAPI ConsumerThread(LPVOID) {
 
         FrameSlot& slot = g_Ring.slots[r % RING_SIZE];
 
-        // ---- pack rows (remove rowPitch padding) ----
+        // ---- Pack rows (remove rowPitch padding) ----
         uint32_t tightRow = slot.width * 4;
         uint32_t packedSize = slot.height * tightRow;
-
         std::vector<uint8_t> packed(packedSize);
 
         for (uint32_t y = 0; y < slot.height; y++) {
@@ -144,6 +136,7 @@ DWORD WINAPI ConsumerThread(LPVOID) {
 
         if (!WriteFile(pipe, &hdr, sizeof(hdr), &written, nullptr)) {
             Sleep(1);
+
             continue;
         }
 
@@ -161,8 +154,9 @@ DWORD WINAPI ConsumerThread(LPVOID) {
     return 0;
 }
 
+
 // ============================================================
-// DX11 Present Hook
+// DX11 Present Hook (Graphics Capture)
 // ============================================================
 
 typedef HRESULT(__stdcall* PresentFn)(IDXGISwapChain*, UINT, UINT);
@@ -170,14 +164,12 @@ PresentFn oPresent = nullptr;
 
 HRESULT __stdcall HookedPresent(IDXGISwapChain* swap, UINT sync, UINT flags) {
     static bool init = false;
-    OutputDebugStringA("Present called\n");
     static int count = 0;
     count++;
+
     if (count == 100) {
         OutputDebugStringA("[DLL] 100 Presents reached\n");
     }
-
-
 
     if (!init) {
         swap->GetDevice(__uuidof(ID3D11Device), (void**)&g_Device);
@@ -237,11 +229,11 @@ HRESULT __stdcall HookedPresent(IDXGISwapChain* swap, UINT sync, UINT flags) {
 }
 
 // ============================================================
-// Hook Installer
+// Thread 3: Hook Installer
 // ============================================================
 
 DWORD WINAPI InitHookThread(LPVOID) {
-    Sleep(2000);
+    Sleep(2000); // Wait for the game to initialize its DirectX environment
 
     IDXGISwapChain* swap = nullptr;
     ID3D11Device* dev = nullptr;
@@ -293,8 +285,10 @@ DWORD WINAPI InitHookThread(LPVOID) {
 BOOL APIENTRY DllMain(HMODULE mod, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(mod);
+
         CreateThread(nullptr, 0, ConsumerThread, nullptr, 0, nullptr);
         CreateThread(nullptr, 0, InitHookThread, nullptr, 0, nullptr);
+        
     }
 
     if (reason == DLL_PROCESS_DETACH) {

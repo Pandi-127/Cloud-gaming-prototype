@@ -141,3 +141,24 @@ vite.config.ts.timestamp-*
 .vite/
 #visualStudio catch
 .vs/
+.zed
+
+# Ignore build directories
+Debug/
+Release/
+x64/
+bin/
+obj/
+
+# Ignore specific extensions
+*.exe
+*.dll
+*.pdb
+*.lib
+
+# Ignore all build output
+[Xx]64/
+[Dd]ebug/
+[Rr]elease/
+bin/
+obj/
