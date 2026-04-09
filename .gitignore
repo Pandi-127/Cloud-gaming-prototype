@@ -155,6 +155,7 @@ obj/
 *.dll
 *.pdb
 *.lib
+*.pdf
 
 # Ignore all build output
 [Xx]64/
@@ -162,3 +163,4 @@ obj/
 [Rr]elease/
 bin/
 obj/
+documents-tools
